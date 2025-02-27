@@ -33,101 +33,117 @@ export interface ComputedFeatures {
 export const genTree = (
     renderedOSMFeatureMeta: FeatureMetaGroup
 ): FeatureTree => {
-    const { node, way, relation } = renderedOSMFeatureMeta
+    const { node, way, relation } = renderedOSMFeatureMeta;
     const featureTree: FeatureTree = {
         elems: { node: {}, way: {}, relation: {} },
         roots: { node: {}, way: {}, relation: {} }
-    }
-    // step 1 elements
+    };
 
-    // Step 1: Initialize elements
-    const initializeElements = (
-        type: FeatureTypes,
-        sourceObj: Record<NumericString, unknown>
+    // 使用更高效的 Map 结构
+    const typeMaps = {
+        node: new Map<NumericString, FeatureTreeNode>(),
+        way: new Map<NumericString, FeatureTreeNode>(),
+        relation: new Map<NumericString, FeatureTreeNode>()
+    };
+
+    // 类型安全的初始化
+    const initializeElements = <T extends FeatureTypes>(
+        type: T,
+        source: Record<NumericString, unknown>
     ) => {
-        Object.keys(sourceObj).forEach(id => {
-            const numericId = id as NumericString
-            featureTree.elems[type][numericId] = {
-                id: numericId,
-                type: type,
+        const ids = Object.keys(source) as NumericString[];
+        for (const id of ids) {
+            const newNode: FeatureTreeNode = {
+                id,
+                type,
                 fathers: { node: [], way: [], relation: [] },
                 childs: { node: [], way: [], relation: [] }
+            };
+            // 类型断言
+            (featureTree.elems[type] as Record<NumericString, FeatureTreeNode>)[id] = newNode;
+            typeMaps[type].set(id, newNode);
+        }
+    };
+
+    initializeElements('node', node);
+    initializeElements('way', way);
+    initializeElements('relation', relation);
+
+    // 处理 way 的节点关系
+    for (const w of Object.values(way)) {
+        const cur = typeMaps.way.get(w["@_id"]);
+        if (!cur) throw new Error(`Missing way: ${w["@_id"]}`);
+
+        for (const nd of w.nd ?? []) {
+            const child = typeMaps.node.get(nd["@_ref"]);
+            if (child) {
+                child.fathers.way.push(cur.id);
+                cur.childs.node.push(child.id);
             }
-        })
+        }
     }
-    initializeElements('node', node)
-    initializeElements('way', way)
-    initializeElements('relation', relation)
 
-    // step 2 build tree
-    Object.values(way).forEach(way => {
-        const cur = featureTree.elems.way[way["@_id"]]
-        if (!cur) {
-            throw new Error(`${way["@_id"]} !`)
-        }
-        way.nd.forEach(nd => {
-            const child = featureTree.elems.node[nd["@_ref"]]
+    // 处理 relation 的成员关系
+    for (const rl of Object.values(relation)) {
+        const cur = typeMaps.relation.get(rl["@_id"]);
+        if (!cur) throw new Error(`Missing relation: ${rl["@_id"]}`);
+
+        for (const mem of rl.member ?? []) {
+            const memType = mem["@_type"];
+            if (!['node', 'way', 'relation'].includes(memType)) continue;
+
+            const child = typeMaps[memType as FeatureTypes].get(mem["@_ref"]);
             if (child) {
-                child.fathers.way.push(cur.id)
-                cur.childs.node.push(child.id)
+                child.fathers.relation.push(cur.id);
+                cur.childs[memType as FeatureTypes].push(child.id);
             }
-        });
-    })
-
-    Object.values(relation).forEach(rl => {
-        const cur = featureTree.elems.relation[rl["@_id"]]
-        if (!cur) {
-            throw new Error(`${rl["@_id"]} !`)
         }
-        rl.member.forEach(mem => {
-            const child = featureTree.elems[mem["@_type"]][mem["@_ref"]]
-            if (child) {
-                child.fathers.relation.push(cur.id)
-                cur.childs[mem["@_type"]].push(child.id)
+    }
+
+    // 根节点检测优化
+    const isRootNode = (n: FeatureTreeNode) =>
+        Object.values(n.fathers).every(arr => arr.length === 0);
+
+    for (const type of ['node', 'way', 'relation'] as FeatureTypes[]) {
+        for (const [id, node] of typeMaps[type]) {
+            if (isRootNode(node)) {
+                featureTree.roots[type][id] = true;
             }
-        });
-    })
-    // step 3 identify roots
-    const faEmpty = (n: FeatureTreeNode) => 0 === (n.fathers.node.length + n.fathers.way.length + n.fathers.relation.length)
+        }
+    }
 
-    Object.values(featureTree.elems.node).forEach(node => {
-        if (faEmpty(node)) {
-            featureTree.roots.node[node.id] = true
-        }
-    })
-    Object.values(featureTree.elems.way).forEach(way => {
-        if (faEmpty(way)) {
-            featureTree.roots.way[way.id] = true
-        }
-    })
-    Object.values(featureTree.elems.relation).forEach(relation => {
-        if (faEmpty(relation)) {
-            featureTree.roots.relation[relation.id] = true
-        }
-    })
-
-    return featureTree
+    return featureTree;
 };
 
+
 export const genCollection = (osmFeatureMeta: FeatureMetaGroup): Collection => {
-    const unionCollection = (...iterable: CollectionItem[]): CollectionItem => ({
-        node: iterable.reduce((acc, col) => ({ ...acc, ...col.node }), {}),
-        way: iterable.reduce((acc, col) => ({ ...acc, ...col.way }), {}),
-        relation: iterable.reduce((acc, col) => ({ ...acc, ...col.relation }), {}),
-    })
+    // 优化合并算法
+    const unionCollection = (...iterable: CollectionItem[]): CollectionItem => {
+        const result: CollectionItem = { node: {}, way: {}, relation: {} };
 
-    const { node, way, relation } = osmFeatureMeta
-    const ptv2 = filterBusPTv2(node, way, relation)
-    const highway = filterHighway(node, way, relation)
+        for (let i = 0; i < iterable.length; i++) {
+            const col = iterable[i];
+            Object.assign(result.node, col.node);
+            Object.assign(result.way, col.way);
+            Object.assign(result.relation, col.relation);
+        }
+        return result;
+    };
+
+    const { node, way, relation } = osmFeatureMeta;
+
+    // 同步执行过滤操作
+    const ptv2 = filterBusPTv2(node, way, relation);
+    const highway = filterHighway(node, way, relation);
     const created = filterCreated(node, way, relation);
-    return {
-        ptv2: ptv2,
-        highway: highway,
-        created: created,
-        global: unionCollection(ptv2, highway)
-    }
-}
 
+    return {
+        ptv2,
+        highway,
+        created,
+        global: unionCollection(ptv2, highway)
+    };
+};
 export const computed = createComputed((state: OSMMapStore): ComputedFeatures => {
     return {
         collections: genCollection(state.meta),

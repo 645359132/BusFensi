@@ -2,26 +2,39 @@ import { FeatureRefObj } from "../../../../../type/osm/refobj"
 import { BaseContext, StoreType } from "../../../../../type/stateMachine/baseEvent"
 import { CommonStateEvent } from "../../../../../type/stateMachine/commonEdit"
 import { BaseStateMachine, StateItem } from "../../state"
-import { getWGS84LocateByPixel, getPixelByWGS84Locate } from "../../../../../utils/geo/mapProjection"
+import { getWGS84LocateByPixel } from "../../../../../utils/geo/mapProjection"
 import { PointerWithOSMEvent } from "../../../../../type/stateMachine/commonEdit/componentEvent"
 interface ComponentStateContext extends BaseContext {
   componentTarget?: FeatureRefObj
 }
 type ComponentStateItem = StateItem<CommonStateEvent>;
+let lastFrameTime = 0;
+const DRAG_FRAME_RATE = 16
 
 const doComponentDragging = (x: number, y: number, context: ComponentStateContext): void => {
-  const { height, width, viewpoint, zoom } = context.store.view.getState()
+  const now = performance.now();
+  if (now - lastFrameTime < DRAG_FRAME_RATE) {
+    return;
+  }
+  lastFrameTime = now;
+
+  // 优化2：缓存store状态，避免重复获取
+  const storeState = context.store.view.getState();
+  const { height, width, viewpoint, zoom } = storeState;
+  // const { height, width, viewpoint, zoom } = context.store.view.getState()
   if (!height || !width) { return }
-  const { modifyFeatureMetaNC } = context.store.meta.getState()
-  const location = getWGS84LocateByPixel({ x: x, y: y }, viewpoint, zoom, width, height);
-  const newpixPoint = getPixelByWGS84Locate(location, viewpoint, zoom, width, height);
-  console.log("on component drag", { x: x, y: y }, newpixPoint)
-  if (context.componentTarget?.id && context.componentTarget.type === "node") {
-    const { type, id } = context.componentTarget
-    modifyFeatureMetaNC(type, id, feature => { feature["@_lon"] = location.lon; feature["@_lat"] = location.lat })
-  } else {
+  if (!context.componentTarget?.id || context.componentTarget.type !== "node") {
     throw new Error(`context.componentTarget should not be ${JSON.stringify(context.componentTarget)} at point move`)
   }
+  const { modifyFeatureMetaNC } = context.store.meta.getState()
+  const location = getWGS84LocateByPixel({ x: x, y: y }, viewpoint, zoom, width, height);
+  // const newpixPoint = getPixelByWGS84Locate(location, viewpoint, zoom, width, height);
+  const { type, id } = context.componentTarget
+  // console.log("on component drag", { x: x, y: y }, newpixPoint)
+  modifyFeatureMetaNC(type, id, feature => {
+    feature["@_lon"] = location.lon;
+    feature["@_lat"] = location.lat;
+  });
 };
 
 export class ComponentStateMachine extends BaseStateMachine<CommonStateEvent, ComponentStateContext> {
@@ -29,6 +42,9 @@ export class ComponentStateMachine extends BaseStateMachine<CommonStateEvent, Co
   componentHover: ComponentStateItem
   componentMousedown: ComponentStateItem
   pointDrag: ComponentStateItem
+  private getMetaState() {
+    return this.context.store.meta.getState();
+  }
   constructor(store: StoreType) {
     super(store)
     // 新建子状态
@@ -41,27 +57,34 @@ export class ComponentStateMachine extends BaseStateMachine<CommonStateEvent, Co
     this.entry = this.idle
     this.current = this.idle
     this.accept = [this.idle]
+    const createHoverHandler = (hoverState: boolean) => (event: CommonStateEvent) => {
+      const context = this.context;
+      if (
+          (hoverState ? ["pointerover", "pointerenter"] : ["pointerleave", "pointerout"]).includes(event.type) &&
+          'componentTarget' in event && event.componentTarget
+      ) {
+        context.componentTarget = event.componentTarget;
+        const { id, type } = context.componentTarget;
+        // console.log(`ComponentStateMachine: component ${hoverState ? 'hover' : 'leave'} triggered`, type, id);
 
+        const { modifyFeatureStateNC } = this.getMetaState();
+        modifyFeatureStateNC(type, id, feature => feature.hovered = hoverState);
+
+        if (!hoverState) {
+          context.componentTarget = undefined;
+        }
+        return true;
+      }
+      return false;
+    };
     // 状态转换：从 idle 到 componentHover
     this.idle.appendNext(this.componentHover, {
-      transform: (event) => {
-        const context = this.context;
-        if (
-          ["pointerover", "pointerenter"].includes(event.type) &&
-          'componentTarget' in event && event.componentTarget
-        ) {
-          context.componentTarget = event.componentTarget;
-          const { id, type } = context.componentTarget;
-          console.log("ComponentStateMachine: component hover triggered", type, id);
-
-          const { modifyFeatureStateNC } = context.store.meta.getState();
-          modifyFeatureStateNC(type, id, feature => feature.hovered = true);
-          return true;
-        }
-        return false;
-      }
+      transform: createHoverHandler(true)
     })
-
+    // Transition: componentHover → idle
+    this.componentHover.appendNext(this.idle, {
+      transform: createHoverHandler(false)
+    })
 
     // Transition: componentHover → mousedown
     this.componentHover.appendNext(this.componentMousedown, {
@@ -71,7 +94,7 @@ export class ComponentStateMachine extends BaseStateMachine<CommonStateEvent, Co
           console.log("ComponentStateMachine: transition to mousedown");
 
           const { id, type } = context.componentTarget;
-          const { modifyFeatureStateNC } = context.store.meta.getState();
+          const { modifyFeatureStateNC } = this.getMetaState();
           modifyFeatureStateNC(type, id, feature => feature.hovered = false);
           return true;
         }

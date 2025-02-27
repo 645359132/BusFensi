@@ -56,7 +56,7 @@ export class MapViewStateMachine extends BaseStateMachine<CommonStateEvent, MapV
           context.startPoint = { x: clientX, y: clientY };
           // 保存拖拽开始前的视点
           context.viewpointBeforeDrag = context.store.view.getState().viewpoint;
-          console.log("MapViewStateMachine: 开始地图拖拽", context.startPoint);
+          // console.log("MapViewStateMachine: 开始地图拖拽", context.startPoint);
           return true;
         }
         return false;
@@ -73,7 +73,7 @@ export class MapViewStateMachine extends BaseStateMachine<CommonStateEvent, MapV
             throw new Error(`context.startPoint.x must be number when map drag`)
           }
           const [deltax, deltay] = [context.startPoint.x - x, context.startPoint.y - y];
-          console.log('moving to', deltax, deltay);
+          // console.log('moving to', deltax, deltay);
           const { zoom, setViewpoint, width: _w, height: _h } = context.store.view.getState()
           const width = _w!, height = _h!;
           const vnb = context.viewpointBeforeDrag!;

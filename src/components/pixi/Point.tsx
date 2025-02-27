@@ -1,11 +1,9 @@
-// @ts-expect-error wait rapid to implement type
 import { DashLine } from '@rapideditor/pixi-dashed-line';
-
 import { Container, Sprite } from "@pixi/react";
 import { busStopTexture, circleTexture, locationPinTexture } from "./textures";
 import { getPixelByWGS84Locate } from "../../utils/geo/mapProjection";
 import { GlowFilter } from "pixi-filters";
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useMemo } from "react";
 import { Container as PIXIContainer, Circle as PIXICircle, Graphics as PIXIGraphics, Rectangle as PIXIRectangle, DisplayObject } from "pixi.js";
 import { isBusStop } from "../../utils/osm/nodeType";
 import { T2Arr } from "../../utils/helper/object";
@@ -21,25 +19,30 @@ type PointProps = React.ComponentProps<typeof Container> & {
 }
 
 function Point({
-    node,
-    mapViewStatus: { width, height, viewpoint, zoom },
-    status: { visible: _v, hovered, selected, highlighted },
-    layerRef,
-    ...containerProps }: PointProps) {
+                   node,
+                   mapViewStatus: { width, height, viewpoint, zoom },
+                   status: { visible: _v, hovered, selected, highlighted },
+                   layerRef,
+                   ...containerProps }: PointProps) {
     const visible = zoom >= 16 && _v;
-
-    const containerRef = useRef<PIXIContainer>(null)
-    const haloRef = useRef<PIXIGraphics | null>(null)
-    const busStop = isBusStop(T2Arr(node.tag))
-    const typeDisplay: "dot" | "pin" = "dot"
+    const containerRef = useRef<PIXIContainer>(null);
+    const haloRef = useRef<PIXIGraphics | null>(null);
+    const busStop = isBusStop(T2Arr(node.tag));
+    const typeDisplay: "dot" | "pin" = "dot";
     const display = (typeDisplay !== "dot" && zoom >= 17) ? "pin" : "dot";
-    const position = getPixelByWGS84Locate(
+    const position = useMemo(() => getPixelByWGS84Locate(
         { lon: node["@_lon"], lat: node["@_lat"] },
         viewpoint,
         zoom,
         width,
         height
-    )
+    ), [node, viewpoint, zoom, width, height]);
+
+    const glowFilter = useMemo(() => {
+        const glow = new GlowFilter({ distance: 15, outerStrength: 3, color: 0xffff00 });
+        glow.resolution = 2;
+        return glow;
+    }, []);
 
     useEffect(() => {
         const container = containerRef.current;
@@ -77,18 +80,9 @@ function Point({
                 const showHighlight = (visible && highlighted);
                 const showSelect = (visible && selected);
 
-                // Hover
-                if (showHover) {
+                if (showHover || showHighlight) {
                     if (!container.filters) {
-                        const glow = new GlowFilter({ distance: 15, outerStrength: 3, color: 0xffff00 });
-                        glow.resolution = 2;
-                        container.filters = [glow];
-                    }
-                } else if (showHighlight) {
-                    if (!container.filters) {
-                        const glow = new GlowFilter({ distance: 15, outerStrength: 3, color: 0x7092ff });
-                        glow.resolution = 2;
-                        container.filters = [glow];
+                        container.filters = [glowFilter];
                     }
                 } else {
                     if (container.filters) {
@@ -97,7 +91,6 @@ function Point({
                 }
 
                 if (showSelect && layerRef.current) {
-                    console.log("show select")
                     if (!haloRef.current) {
                         haloRef.current = new PIXIGraphics();
                         layerRef.current.addChild(haloRef.current);
@@ -115,7 +108,6 @@ function Point({
                     const shape = container.hitArea;
                     if (shape instanceof PIXICircle) {
                         new DashLine(haloRef.current, HALO_STYLE).drawCircle(shape.x + position.x, shape.y + position.y, shape.radius, 20);
-                        console.log(haloRef.current)
                     } else if (shape instanceof PIXIRectangle) {
                         new DashLine(haloRef.current, HALO_STYLE).drawRect(shape.x + position.x, shape.y + position.y, shape.width, shape.height);
                     }
@@ -125,58 +117,58 @@ function Point({
                         haloRef.current = null;
                     }
                 }
-            }
+            };
 
             updateHitbox();
             updateHalo();
         }
-
-    }, [zoom, highlighted, hovered, visible, display, selected, layerRef, position]);
+    }, [zoom, highlighted, hovered, visible, display, selected, layerRef, position, glowFilter]);
 
     useEffect(() => {
         const container = containerRef.current;
         if (container) {
             const updateStyle = () => {
-                if (zoom < 16) {  // Hide container and everything under it
-                    //setStatusVisible(false)
-                } else if (zoom < 17) {  // Markers drawn but smaller
-                    //setStatusVisible(true)
+                if (zoom < 16) {
+                    container.scale.set(0, 0);
+                } else if (zoom < 17) {
                     container.scale.set(0.8, 0.8);
-                } else {  // z >= 17 - Show the requested marker (circles OR pins)
-                    //setStatusVisible(true)
+                } else {
                     container.scale.set(1, 1);
                 }
-            }
-            updateStyle()
+            };
+            updateStyle();
         }
-    }, [zoom])
+    }, [zoom]);
+
     if (zoom < 16) {
         return null;
     }
-    return (<Container
-        {...containerProps}
-        position={position}
-        visible={visible}
-        ref={containerRef}
-    >
-        <Sprite
-            eventMode="none"
-            sortableChildren={false}
-            visible={true}
-            texture={display === "dot" ? circleTexture : locationPinTexture}
-            anchor={display === "dot" ? { x: 0.5, y: 0.5 } : { x: 0.5, y: 1 }}
-            width={busStop ? 16 : 8}
-            height={busStop ? 16 : 8}
-        />
-        {busStop && <Sprite
-            eventMode="none"
-            texture={busStopTexture}
-            anchor={display === "dot" ? { x: 0.5, y: 0.5 } : { x: 0.5, y: 1 }}
-            width={11}
-            height={11}
-        />}
 
-    </Container>)
+    return (
+        <Container
+            {...containerProps}
+            position={position}
+            visible={visible}
+            ref={containerRef}
+        >
+            <Sprite
+                eventMode="none"
+                sortableChildren={false}
+                visible={true}
+                texture={display === "dot" ? circleTexture : locationPinTexture}
+                anchor={display === "dot" ? { x: 0.5, y: 0.5 } : { x: 0.5, y: 1 }}
+                width={busStop ? 16 : 8}
+                height={busStop ? 16 : 8}
+            />
+            {busStop && <Sprite
+                eventMode="none"
+                texture={busStopTexture}
+                anchor={display === "dot" ? { x: 0.5, y: 0.5 } : { x: 0.5, y: 1 }}
+                width={11}
+                height={11}
+            />}
+        </Container>
+    );
 }
 
 export default Point;
